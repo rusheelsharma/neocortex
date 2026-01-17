@@ -10,6 +10,7 @@ import { parseFile } from './parser.js';
 import { generateAllExamples, prepareDataset } from './generator.js';
 import { writeJSONL, writeDatasetSplits, writeStats, formatStats, calculateStats } from './output.js';
 import { CodeEntity, GeneratorConfig, DEFAULT_CONFIG } from './types.js';
+import { buildDependencyGraph, getGraphStats, expandDependencies } from './graph.js';
 
 const program = new Command();
 
@@ -184,6 +185,80 @@ program
       console.log('\nBy question type:', byType);
       console.log('By difficulty:', byDiff);
       console.log('');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// GRAPH COMMAND
+// ============================================================================
+
+program
+  .command('graph')
+  .description('Build and display dependency graph for a repository')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .option('--expand <name>', 'Expand dependencies for a specific function')
+  .action(async (repoUrl: string, opts) => {
+    console.log('\n🕸️  Building Dependency Graph\n');
+
+    try {
+      // Clone and parse
+      const repoPath = await cloneRepository(repoUrl);
+      const files = await getSourceFiles(
+        repoPath,
+        ['.ts', '.tsx', '.js', '.jsx'],
+        DEFAULT_CONFIG.excludePatterns || []
+      );
+
+      console.log(`📝 Parsing ${files.length} files...`);
+      const entities: CodeEntity[] = [];
+      for (const file of files) {
+        try {
+          entities.push(...await parseFile(file));
+        } catch { /* skip */ }
+      }
+      console.log(`   Found ${entities.length} entities\n`);
+
+      // Build graph
+      console.log('🔗 Building dependency graph...');
+      const graph = buildDependencyGraph(entities);
+      const stats = getGraphStats(graph);
+
+      console.log(`
+📊 Graph Statistics
+═══════════════════════════════
+Entities:          ${stats.totalEntities}
+Edges:             ${stats.totalEdges}
+Avg dependencies:  ${stats.avgDependencies.toFixed(2)}
+Avg dependents:    ${stats.avgDependents.toFixed(2)}
+
+🔥 Most Called Functions:
+${stats.mostCalled.map(m => `   ${m.name}: ${m.count} callers`).join('\n') || '   (none)'}
+
+📦 Functions with Most Dependencies:
+${stats.mostDependencies.map(m => `   ${m.name}: ${m.count} calls`).join('\n') || '   (none)'}
+`);
+
+      // Expand specific function if requested
+      if (opts.expand) {
+        console.log(`\n🔍 Expanding: ${opts.expand}`);
+        const ids = graph.nameToIds.get(opts.expand) || [];
+        if (ids.length === 0) {
+          console.log('   Function not found');
+        } else {
+          const expanded = expandDependencies(graph, ids, 2);
+          console.log(`
+   Primary matches:  ${expanded.primary.map(e => e.name).join(', ') || '(none)'}
+   Dependencies:     ${expanded.dependencies.map(e => e.name).join(', ') || '(none)'}
+   Dependents:       ${expanded.dependents.map(e => e.name).join(', ') || '(none)'}
+   Related types:    ${expanded.types.map(e => e.name).join(', ') || '(none)'}
+`);
+        }
+      }
+
+      console.log('✅ Done!\n');
     } catch (err) {
       console.error('\n❌ Error:', err);
       process.exit(1);
