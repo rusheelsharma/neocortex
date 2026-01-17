@@ -1,0 +1,32 @@
+{
+  "name": "neocortex",
+  "version": "1.0.0",
+  "description": "Generate SLM training data from GitHub repositories",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "neocortex": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["slm", "training-data", "code-generation", "ast"],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.28.0",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "commander": "^14.0.2",
+    "simple-git": "^3.30.0",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.9",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
