@@ -11,6 +11,9 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "mcp:dev": "cd mcp && pnpm install && pnpm run dev",
+    "mcp:build": "cd mcp && pnpm run build",
+    "mcp:start": "cd mcp && pnpm run start",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -24,6 +27,7 @@
   "packageManager": "pnpm@10.28.0",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
+    "@leanmcp/core": "^0.3.17",
     "commander": "^14.0.2",
     "dotenv": "^16.4.5",
     "simple-git": "^3.30.0",
@@ -31,6 +35,7 @@
     "tree-sitter-typescript": "0.23.2"
   },
   "devDependencies": {
+    "@leanmcp/cli": "^0.4.5",
     "@types/node": "^25.0.9",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
