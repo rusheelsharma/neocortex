@@ -26,6 +26,7 @@ import { selectWithinBudget } from './retrieval/budget.js';
 import { improvedSearch } from './retrieval/search.js';
 import { compressionPipeline } from './compression/index.js';
 import { classifyQuery, getSearchStrategy, formatAnalysis } from './retrieval/classifier.js';
+import { extractLinesFromRepo, formatExtractionResult } from './extractor.js';
 
 const program = new Command();
 
@@ -612,6 +613,83 @@ ${compressionResult.context}
 
 ═══════════════════════════════════════════════════════════════
 `);
+      console.log('✅ Done!\n');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// FILES COMMAND
+// ============================================================================
+
+program
+  .command('files')
+  .description('List source files in a repository')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .action(async (repoUrl: string) => {
+    console.log('\n📂 Repository Files\n');
+
+    try {
+      const repoPath = await cloneRepository(repoUrl);
+      const files = await getSourceFiles(
+        repoPath,
+        ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs'],
+        []
+      );
+
+      console.log(`Found ${files.length} source files:\n`);
+      
+      // Group by directory
+      const byDir = new Map<string, string[]>();
+      for (const file of files) {
+        const relative = file.replace(repoPath, '').replace(/\\/g, '/').replace(/^\//, '');
+        const dir = relative.includes('/') ? relative.substring(0, relative.lastIndexOf('/')) : '.';
+        if (!byDir.has(dir)) byDir.set(dir, []);
+        byDir.get(dir)!.push(relative);
+      }
+
+      for (const [dir, dirFiles] of Array.from(byDir.entries()).sort()) {
+        console.log(`📁 ${dir}/`);
+        for (const f of dirFiles.slice(0, 10)) {
+          console.log(`   ${f}`);
+        }
+        if (dirFiles.length > 10) {
+          console.log(`   ... and ${dirFiles.length - 10} more`);
+        }
+      }
+
+      console.log('\n✅ Done!\n');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// LINE COMMAND
+// ============================================================================
+
+program
+  .command('line')
+  .description('Extract specific lines from a file in a repository')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .argument('<file-path>', 'Path to file in repo (e.g., src/App.tsx)')
+  .argument('<lines>', 'Line number or range (e.g., 45, 40-50, 10:20)')
+  .action(async (repoUrl: string, filePath: string, lines: string) => {
+    console.log('\n📄 Line Extraction\n');
+
+    try {
+      // 1. Clone repo
+      const repoPath = await cloneRepository(repoUrl);
+
+      // 2. Extract lines
+      console.log(`📍 Extracting lines ${lines} from ${filePath}...`);
+      const result = await extractLinesFromRepo(repoPath, filePath, lines);
+
+      // 3. Display result
+      console.log(formatExtractionResult(result));
       console.log('✅ Done!\n');
     } catch (err) {
       console.error('\n❌ Error:', err);
