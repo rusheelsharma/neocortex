@@ -20,7 +20,23 @@ import * as path from 'path';
 const TEMP_DIR = './temp';
 
 // ----------------------------------------------------------------------------
-// SECTION 2.2.2: REPOSITORY CLONING
+// SECTION 2.2.2: AUTHENTICATION
+// ----------------------------------------------------------------------------
+
+/**
+ * getAuthToken - Get GitHub authentication token from options or environment
+ * 
+ * Priority: 1) Explicit token parameter, 2) GITHUB_TOKEN env var
+ * 
+ * @param optionsToken - Token passed via CLI option
+ * @returns Token string or undefined
+ */
+export function getAuthToken(optionsToken?: string): string | undefined {
+  return optionsToken || process.env.GITHUB_TOKEN;
+}
+
+// ----------------------------------------------------------------------------
+// SECTION 2.2.3: REPOSITORY CLONING
 // ----------------------------------------------------------------------------
 
 /**
@@ -31,6 +47,7 @@ const TEMP_DIR = './temp';
  * was already cloned, it just pulls the latest changes.
  * 
  * @param repoUrl - Full GitHub URL (https://github.com/owner/repo)
+ * @param token - Optional GitHub personal access token for private repos
  * @returns Path to the cloned repository directory
  * 
  * FEATURES:
@@ -38,12 +55,16 @@ const TEMP_DIR = './temp';
  * - Single branch only - we don't need history
  * - Caches cloned repos - subsequent runs are faster
  * - Pulls latest if repo exists - keeps data fresh
+ * - Supports private repos via GitHub PAT
  * 
  * EXAMPLE:
  * const repoPath = await cloneRepository('https://github.com/shadcn/ui');
  * // Returns: './temp/shadcn-ui'
+ * 
+ * // For private repos:
+ * const repoPath = await cloneRepository('https://github.com/org/private-repo', 'ghp_xxxx');
  */
-export async function cloneRepository(repoUrl: string): Promise<string> {
+export async function cloneRepository(repoUrl: string, token?: string): Promise<string> {
   // Ensure temp directory exists
   // recursive: true means it won't error if directory exists
   await fs.mkdir(TEMP_DIR, { recursive: true });
@@ -51,6 +72,19 @@ export async function cloneRepository(repoUrl: string): Promise<string> {
   // Extract a safe directory name from the URL
   const repoName = extractRepoName(repoUrl);
   const targetPath = path.join(TEMP_DIR, repoName);
+
+  // Create authenticated URL if token provided
+  // SECURITY: Never log cloneUrl - it contains the token!
+  let cloneUrl = repoUrl;
+  if (token) {
+    try {
+      const url = new URL(repoUrl);
+      url.username = token;
+      cloneUrl = url.toString();
+    } catch {
+      throw new Error(`Token auth only supported for HTTPS URLs. Got: ${repoUrl}`);
+    }
+  }
 
   // Check if repository was already cloned
   try {
@@ -63,6 +97,16 @@ export async function cloneRepository(repoUrl: string): Promise<string> {
     console.log('🔄 Pulling latest changes...');
     
     try {
+      // If token provided, update remote URL with auth before pulling
+      if (token) {
+        try {
+          const url = new URL(repoUrl);
+          url.username = token;
+          await git.remote(['set-url', 'origin', url.toString()]);
+        } catch {
+          // Ignore URL parse errors for pull
+        }
+      }
       await git.pull();
       console.log('✅ Updated to latest');
     } catch (pullError) {
@@ -77,12 +121,16 @@ export async function cloneRepository(repoUrl: string): Promise<string> {
   }
 
   // Clone the repository
+  // SECURITY: Log original URL, not cloneUrl (which may contain token)
   console.log(`🔍 Cloning ${repoUrl}...`);
+  if (token) {
+    console.log('🔐 Using authenticated access');
+  }
 
   const git: SimpleGit = simpleGit();
 
   try {
-    await git.clone(repoUrl, targetPath, [
+    await git.clone(cloneUrl, targetPath, [
       '--depth', '1',        // Shallow clone - only latest commit
       '--single-branch',     // Only the default branch
     ]);
@@ -93,11 +141,11 @@ export async function cloneRepository(repoUrl: string): Promise<string> {
     const errorMessage = (cloneError as Error).message || String(cloneError);
     
     if (errorMessage.includes('not found') || errorMessage.includes('404')) {
-      throw new Error(`Repository not found: ${repoUrl}\nMake sure the URL is correct and the repo is public.`);
+      throw new Error(`Repository not found: ${repoUrl}\nMake sure the URL is correct and the repo is public (or provide a token for private repos).`);
     }
     
-    if (errorMessage.includes('Authentication')) {
-      throw new Error(`Authentication required for: ${repoUrl}\nPrivate repositories are not yet supported.`);
+    if (errorMessage.includes('Authentication') || errorMessage.includes('403')) {
+      throw new Error(`Authentication failed for: ${repoUrl}\nFor private repos, use --token flag or set GITHUB_TOKEN env var.`);
     }
     
     throw new Error(`Failed to clone repository: ${errorMessage}`);
@@ -142,7 +190,7 @@ function extractRepoName(url: string): string {
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 2.2.3: SOURCE FILE DISCOVERY
+// SECTION 2.2.4: SOURCE FILE DISCOVERY
 // ----------------------------------------------------------------------------
 
 /**
@@ -278,7 +326,7 @@ function shouldExclude(
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 2.2.4: CLEANUP UTILITIES
+// SECTION 2.2.5: CLEANUP UTILITIES
 // ----------------------------------------------------------------------------
 
 /**
@@ -321,7 +369,7 @@ export async function cleanupAllRepositories(): Promise<void> {
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 2.2.5: UTILITY FUNCTIONS
+// SECTION 2.2.6: UTILITY FUNCTIONS
 // ----------------------------------------------------------------------------
 
 /**

@@ -6,7 +6,7 @@
 
 import 'dotenv/config';
 import { Command } from 'commander';
-import { cloneRepository, getSourceFiles } from './clone.js';
+import { cloneRepository, getSourceFiles, getAuthToken } from './clone.js';
 import { parseFile } from './parser.js';
 import { generateAllExamples, prepareDataset } from './generator.js';
 import { writeJSONL, writeDatasetSplits, writeStats, formatStats, calculateStats } from './output.js';
@@ -45,6 +45,7 @@ program
   .option('--no-metadata', 'Exclude metadata')
   .option('--min-lines <n>', 'Min function lines', '3')
   .option('--max-lines <n>', 'Max function lines', '200')
+  .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, opts) => {
     console.log('\n🧠 Neocortex Training Data Generator\n');
     const startTime = Date.now();
@@ -63,7 +64,8 @@ program
 
     try {
       // 1. Clone repository
-      const repoPath = await cloneRepository(repoUrl);
+      const token = getAuthToken(opts.token);
+      const repoPath = await cloneRepository(repoUrl, token);
 
       // 2. Find source files
       console.log('\n📝 Scanning files...');
@@ -130,6 +132,7 @@ program
   .description('Preview examples without writing')
   .argument('<repo-url>', 'GitHub repository URL')
   .option('-n, --num <n>', 'Examples to show', '5')
+  .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, opts) => {
     const config = {
       ...DEFAULT_CONFIG,
@@ -141,7 +144,8 @@ program
     } as GeneratorConfig;
 
     try {
-      const repoPath = await cloneRepository(repoUrl);
+      const token = getAuthToken(opts.token);
+      const repoPath = await cloneRepository(repoUrl, token);
       const files = await getSourceFiles(repoPath, ['.ts', '.tsx', '.js', '.jsx'], config.excludePatterns || []);
       
       const entities: CodeEntity[] = [];
@@ -212,12 +216,14 @@ program
   .description('Build and display dependency graph for a repository')
   .argument('<repo-url>', 'GitHub repository URL')
   .option('--expand <name>', 'Expand dependencies for a specific function')
+  .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, opts) => {
     console.log('\n🕸️  Building Dependency Graph\n');
 
     try {
       // Clone and parse
-      const repoPath = await cloneRepository(repoUrl);
+      const token = getAuthToken(opts.token);
+      const repoPath = await cloneRepository(repoUrl, token);
       const files = await getSourceFiles(
         repoPath,
         ['.ts', '.tsx', '.js', '.jsx'],
@@ -288,12 +294,14 @@ program
   .option('-o, --output <path>', 'Output path for index', './output/index')
   .option('--model <model>', 'Embedding model (openai|voyage-code-2)', 'openai')
   .option('--include-code', 'Include code in embeddings (increases accuracy but uses more tokens)')
+  .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, opts) => {
     console.log('\n🧬 Building Semantic Index\n');
 
     try {
       // 1. Clone & parse
-      const repoPath = await cloneRepository(repoUrl);
+      const token = getAuthToken(opts.token);
+      const repoPath = await cloneRepository(repoUrl, token);
       const files = await getSourceFiles(
         repoPath,
         ['.ts', '.tsx', '.js', '.jsx'],
@@ -365,12 +373,14 @@ program
   .option('--by-name', 'Search by exact function name instead of semantic')
   .option('--code', 'Include code in output')
   .option('--model <model>', 'Embedding model (openai|voyage-code-2)', 'openai')
+  .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, query: string, opts) => {
     console.log('\n🔍 Semantic Search\n');
 
     try {
       // 1. Clone & parse
-      const repoPath = await cloneRepository(repoUrl);
+      const token = getAuthToken(opts.token);
+      const repoPath = await cloneRepository(repoUrl, token);
       const files = await getSourceFiles(
         repoPath,
         ['.ts', '.tsx', '.js', '.jsx'],
@@ -433,6 +443,7 @@ program
   .option('--max-tokens <n>', 'Token budget', '2000')
   .option('--top-k <n>', 'Search results before budget selection', '10')
   .option('--model <model>', 'Embedding model (openai|voyage-code-2)', 'openai')
+  .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, query: string, opts) => {
     const maxTokens = parseInt(opts.maxTokens);
     const topK = parseInt(opts.topK);
@@ -441,7 +452,8 @@ program
 
     try {
       // 1. Clone repo
-      const repoPath = await cloneRepository(repoUrl);
+      const token = getAuthToken(opts.token);
+      const repoPath = await cloneRepository(repoUrl, token);
 
       // 2. Get source files
       const files = await getSourceFiles(
