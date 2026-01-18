@@ -697,5 +697,140 @@ program
     }
   });
 
+// ============================================================================
+// VARIABLE COMMAND
+// ============================================================================
+
+program
+  .command('variable')
+  .alias('var')
+  .description('Find a variable definition and usages in a repository')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .argument('<variable-name>', 'Variable name to search for')
+  .option('--context <n>', 'Lines of context around matches', '3')
+  .action(async (repoUrl: string, variableName: string, opts) => {
+    console.log('\n🔍 Variable Search\n');
+
+    try {
+      // 1. Clone repo
+      const repoPath = await cloneRepository(repoUrl);
+
+      // 2. Get all source files
+      const files = await getSourceFiles(
+        repoPath,
+        ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs'],
+        []
+      );
+
+      console.log(`📂 Searching ${files.length} files for "${variableName}"...\n`);
+
+      const fs = await import('fs/promises');
+      const contextLines = parseInt(opts.context);
+      
+      interface Match {
+        file: string;
+        line: number;
+        content: string;
+        type: 'definition' | 'usage';
+        context: string[];
+      }
+      
+      const matches: Match[] = [];
+
+      // 3. Search each file
+      for (const file of files) {
+        try {
+          const content = await fs.readFile(file, 'utf-8');
+          const lines = content.split('\n');
+          
+          lines.forEach((line, index) => {
+            // Check if line contains the variable
+            if (line.includes(variableName)) {
+              const lineNum = index + 1;
+              const relativePath = file.replace(repoPath, '').replace(/\\/g, '/').replace(/^\//, '');
+              
+              // Determine if it's a definition or usage
+              const isDefinition = 
+                line.includes(`const ${variableName}`) ||
+                line.includes(`let ${variableName}`) ||
+                line.includes(`var ${variableName}`) ||
+                line.match(new RegExp(`^\\s*(export\\s+)?(const|let|var)\\s+${variableName}\\b`));
+              
+              // Get context lines
+              const contextStart = Math.max(0, index - contextLines);
+              const contextEnd = Math.min(lines.length - 1, index + contextLines);
+              const context: string[] = [];
+              
+              for (let i = contextStart; i <= contextEnd; i++) {
+                const prefix = i === index ? '→ ' : '  ';
+                context.push(`${prefix}${i + 1}: ${lines[i]}`);
+              }
+              
+              matches.push({
+                file: relativePath,
+                line: lineNum,
+                content: line.trim(),
+                type: isDefinition ? 'definition' : 'usage',
+                context
+              });
+            }
+          });
+        } catch {
+          // Skip files that can't be read
+        }
+      }
+
+      // 4. Display results
+      if (matches.length === 0) {
+        console.log(`❌ Variable "${variableName}" not found in repository.`);
+        console.log('\n✅ Done!\n');
+        return;
+      }
+
+      // Separate definitions and usages
+      const definitions = matches.filter(m => m.type === 'definition');
+      const usages = matches.filter(m => m.type === 'usage');
+
+      console.log(`Found ${matches.length} matches (${definitions.length} definitions, ${usages.length} usages)\n`);
+
+      // Show definitions first
+      if (definitions.length > 0) {
+        console.log('📌 DEFINITIONS:');
+        console.log('─'.repeat(60));
+        definitions.forEach(match => {
+          console.log(`\n📄 ${match.file}:${match.line}`);
+          console.log(match.context.join('\n'));
+        });
+      }
+
+      // Show usages
+      if (usages.length > 0) {
+        console.log('\n\n📎 USAGES:');
+        console.log('─'.repeat(60));
+        usages.slice(0, 10).forEach(match => {
+          console.log(`\n📄 ${match.file}:${match.line}`);
+          console.log(match.context.join('\n'));
+        });
+        
+        if (usages.length > 10) {
+          console.log(`\n... and ${usages.length - 10} more usages`);
+        }
+      }
+
+      // Summary
+      console.log(`
+═══════════════════════════════════════════════════════════════
+VARIABLE: ${variableName}
+DEFINITIONS: ${definitions.length}
+USAGES: ${usages.length}
+═══════════════════════════════════════════════════════════════
+`);
+      console.log('✅ Done!\n');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
 // Parse command line arguments
 program.parse();
