@@ -25,6 +25,7 @@ import {
 import { selectWithinBudget } from './retrieval/budget.js';
 import { improvedSearch } from './retrieval/search.js';
 import { compressionPipeline } from './compression/index.js';
+import { classifyQuery, getSearchStrategy, formatAnalysis } from './retrieval/classifier.js';
 
 const program = new Command();
 
@@ -448,9 +449,13 @@ program
   .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, query: string, opts) => {
     const maxTokens = parseInt(opts.maxTokens);
-    const topK = parseInt(opts.topK);
 
     console.log('\n🎯 Context Retrieval Pipeline\n');
+
+    // Classify the query to determine search strategy
+    const analysis = classifyQuery(query);
+    const strategy = getSearchStrategy(analysis);
+    console.log(formatAnalysis(analysis));
 
     try {
       // 1. Clone repo
@@ -494,8 +499,9 @@ program
 
       // 6. Raw semantic search (get scores)
       console.log(`🔎 Searching: "${query}"...`);
+      // Use strategy.topK * 1.5 to get a larger candidate pool
       const rawResults = await semanticSearch(query, index.store, graph, {
-        topK: 30,  // Get larger pool for improved search
+        topK: Math.ceil(strategy.topK * 1.5),  // Larger pool for improved search filtering
         expandDepth: 0,  // Don't expand here, improvedSearch handles it
         model: opts.model as 'openai' | 'voyage-code-2',
       });
@@ -537,17 +543,17 @@ Try a different query that matches the codebase content.
         semanticScores.set(match.entity.entityId, match.score);
       }
 
-      // 7. Apply improved search with keyword boosting + graph expansion
+      // 7. Apply improved search with classifier-determined strategy
       const improvedResults = improvedSearch(
         query,
         entities,
         graph,
         semanticScores,
         {
-          topK: 20,
-          minScore: 0.15,  // Lowered - OpenAI embeddings often have lower similarity scores
-          keywordBoost: 0.2,
-          graphDepth: 1,
+          topK: strategy.topK,
+          minScore: strategy.minScore,
+          keywordBoost: strategy.keywordBoost,
+          graphDepth: strategy.graphDepth,
         }
       );
 
@@ -581,7 +587,8 @@ Try a different query that matches the codebase content.
       console.log(`
 ═══════════════════════════════════════════════════════════════
 QUERY: ${query}
-BUDGET: ${maxTokens} tokens
+TYPE:  ${analysis.type.toUpperCase()} (confidence: ${(analysis.confidence * 100).toFixed(0)}%)
+BUDGET: ${maxTokens} tokens | STRATEGY: topK=${strategy.topK}, depth=${strategy.graphDepth}, minScore=${strategy.minScore}
 ═══════════════════════════════════════════════════════════════
 
 📊 SEARCH RESULTS
