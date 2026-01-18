@@ -190,11 +190,17 @@ export class IndexRepoService {
       const openaiApiKey = process.env.OPENAI_API_KEY;
       const hasApiKey = !!(leanmcpApiKey || openaiApiKey);
       
+      // Generate session ID for LeanMCP observability (track all embedding requests for this indexing session)
+      const sessionId = `neocortex-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      
       if (!skipEmbeddings && hasApiKey) {
         // Determine if using LeanMCP based on which API key is set
         const isUsingLeanMCP = !!leanmcpApiKey;
         const modelSource = isUsingLeanMCP ? 'LeanMCP' : 'OpenAI';
         console.log(`🧬 Generating semantic embeddings with ${modelSource}...`);
+        if (isUsingLeanMCP) {
+          console.log(`   📊 Session ID: ${sessionId} (for observability)`);
+        }
         try {
           const config: EmbeddingConfig = {
             ...DEFAULT_EMBEDDING_CONFIG,
@@ -208,7 +214,8 @@ export class IndexRepoService {
             (current, total) => {
               const percent = Math.round((current / total) * 100);
               process.stdout.write(`\r   [${('█').repeat(Math.floor(percent / 5))}${('░').repeat(20 - Math.floor(percent / 5))}] ${percent}%`);
-            }
+            },
+            sessionId  // Pass session ID for observability
           );
           console.log(''); // New line after progress bar
 
@@ -239,7 +246,8 @@ export class IndexRepoService {
         entities: allEntities,
         graph,
         vectorStore,
-        indexedAt: new Date()
+        indexedAt: new Date(),
+        sessionId: hasApiKey ? sessionId : undefined  // Store session ID for search queries
       };
 
       store.add(indexedRepo);

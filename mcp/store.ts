@@ -28,6 +28,7 @@ export interface IndexedRepository {
   graph: DependencyGraph;
   vectorStore: VectorStore | null;  // null if embeddings not generated
   indexedAt: Date;
+  sessionId?: string;  // Session ID for LeanMCP observability
 }
 
 /**
