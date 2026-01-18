@@ -461,12 +461,12 @@ export function classifyQuery(query: string): QueryAnalysis {
  * Generate search strategy parameters based on query analysis
  */
 export function getSearchStrategy(analysis: QueryAnalysis): SearchStrategy {
-  // Note: OpenAI embeddings typically produce lower similarity scores (0.2-0.5 range)
+  // Note: OpenAI embeddings typically produce lower similarity scores (0.2-0.4 range)
   // These thresholds are calibrated for that behavior
   const base: SearchStrategy = {
     graphDepth: analysis.depth,
     topK: analysis.topK,
-    minScore: 0.35,  // Base threshold for OpenAI embeddings
+    minScore: 0.20,  // Base threshold for OpenAI embeddings (they score low)
     keywordBoost: 0.2,
     includeCallers: false,
     includeCallees: true,
@@ -478,7 +478,7 @@ export function getSearchStrategy(analysis: QueryAnalysis): SearchStrategy {
     case 'simple':
       return {
         ...base,
-        minScore: 0.40, // Slightly higher for focused queries
+        minScore: 0.25, // OpenAI scores 0.25-0.35 for relevant code
       };
       
     case 'multi-hop':
