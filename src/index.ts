@@ -22,6 +22,7 @@ import {
   DEFAULT_EMBEDDING_CONFIG,
   EmbeddingConfig,
 } from './embeddings.js';
+import { selectWithinBudget } from './retrieval/budget.js';
 
 const program = new Command();
 
@@ -414,6 +415,119 @@ program
       // 4. Display
       console.log(formatSearchResults(result, index.graph, { includeCode: opts.code }));
       console.log('\n✅ Done!\n');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// CONTEXT COMMAND
+// ============================================================================
+
+program
+  .command('context')
+  .description('Test the full retrieval pipeline and see actual LLM context')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .argument('<query>', 'Search query (natural language)')
+  .option('--max-tokens <n>', 'Token budget', '2000')
+  .option('--top-k <n>', 'Search results before budget selection', '10')
+  .option('--model <model>', 'Embedding model (openai|voyage-code-2)', 'openai')
+  .action(async (repoUrl: string, query: string, opts) => {
+    const maxTokens = parseInt(opts.maxTokens);
+    const topK = parseInt(opts.topK);
+
+    console.log('\n🎯 Context Retrieval Pipeline\n');
+
+    try {
+      // 1. Clone repo
+      const repoPath = await cloneRepository(repoUrl);
+
+      // 2. Get source files
+      const files = await getSourceFiles(
+        repoPath,
+        ['.ts', '.tsx', '.js', '.jsx'],
+        DEFAULT_CONFIG.excludePatterns || []
+      );
+
+      // 3. Parse all files
+      console.log(`📝 Parsing ${files.length} files...`);
+      const entities: CodeEntity[] = [];
+      for (const file of files) {
+        try {
+          entities.push(...await parseFile(file));
+        } catch { /* skip */ }
+      }
+      console.log(`   Found ${entities.length} entities\n`);
+
+      // 4. Build dependency graph
+      console.log('🔗 Building dependency graph...');
+      const graph = buildDependencyGraph(entities);
+
+      // 5. Build embeddings
+      console.log(`🧬 Building embeddings with ${opts.model}...`);
+      const config: EmbeddingConfig = {
+        ...DEFAULT_EMBEDDING_CONFIG,
+        model: opts.model as 'openai' | 'voyage-code-2',
+      };
+      const index = await buildSemanticIndex(entities, config, (stage, cur, total) => {
+        if (stage === 'Generating embeddings') {
+          const pct = Math.round((cur / total) * 100);
+          process.stdout.write(`\r   [${'█'.repeat(Math.floor(pct / 5))}${'░'.repeat(20 - Math.floor(pct / 5))}] ${pct}%`);
+        }
+      });
+      console.log('\n');
+
+      // 6. Semantic search
+      console.log(`🔎 Searching: "${query}"...`);
+      const searchResult = await semanticSearch(query, index.store, graph, {
+        topK,
+        expandDepth: 2,
+        model: opts.model as 'openai' | 'voyage-code-2',
+      });
+
+      // Collect all relevant entities from search (primary matches + expanded)
+      const searchEntities: CodeEntity[] = [];
+      for (const match of searchResult.matches) {
+        const entity = graph.entities.get(match.entity.entityId);
+        if (entity) searchEntities.push(entity);
+      }
+      if (searchResult.expanded) {
+        searchEntities.push(...searchResult.expanded.dependencies);
+        searchEntities.push(...searchResult.expanded.dependents);
+      }
+
+      // 7. Apply budget selection
+      const budgetResult = selectWithinBudget(searchEntities, maxTokens);
+
+      // 8. Print results
+      console.log(`
+═══════════════════════════════════════════════════════════════
+QUERY: ${query}
+BUDGET: ${maxTokens} tokens
+═══════════════════════════════════════════════════════════════
+
+📊 SEARCH RESULTS
+Found ${searchEntities.length} entities, selected ${budgetResult.selected.length} within budget
+
+Selected entities:`);
+
+      budgetResult.selected.forEach((entity, i) => {
+        console.log(`  ${i + 1}. ${entity.name} (${entity.type}) - ${entity.tokens} tokens - ${entity.file}`);
+      });
+
+      console.log(`
+Total tokens: ${budgetResult.totalTokens}
+
+═══════════════════════════════════════════════════════════════
+CONTEXT (what would be sent to LLM)
+═══════════════════════════════════════════════════════════════
+
+${budgetResult.context}
+
+═══════════════════════════════════════════════════════════════
+`);
+      console.log('✅ Done!\n');
     } catch (err) {
       console.error('\n❌ Error:', err);
       process.exit(1);
