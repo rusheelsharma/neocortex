@@ -18,7 +18,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "server": "tsx src/server.ts",
     "ui": "vite",
-    "ui:build": "vite build"
+    "ui:build": "vite build",
+    "benchmark": "tsx src/benchmark.ts",
+    "demo": "tsx src/demo.ts"
 
   },
   "keywords": [
