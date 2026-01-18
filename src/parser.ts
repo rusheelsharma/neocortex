@@ -168,6 +168,11 @@ function extractEntity(
     case 'method_definition':
       return extractMethod(node, filePath, content);
 
+    // Variables (const, let, var)
+    case 'lexical_declaration':
+    case 'variable_declaration':
+      return extractVariable(node, filePath, content);
+
     // All other node types - not entities we extract
     default:
       return null;
@@ -554,7 +559,153 @@ function extractMethod(
 }
 
 // ----------------------------------------------------------------------------
-// SECTION 3.2.10: HELPER FUNCTIONS - DOCSTRINGS
+// SECTION 3.2.10: VARIABLE EXTRACTION
+// ----------------------------------------------------------------------------
+
+/**
+ * extractVariable - Extract a variable declaration (const, let, var)
+ * 
+ * Extracts:
+ * - Module-level variables (const API_URL = "...")
+ * - React hooks (useState, useRef, useMemo, useCallback, useContext)
+ * - Important patterns (useRef, createClient, express(), etc.)
+ * 
+ * Skips:
+ * - Loop variables (for (const i = 0; ...))
+ * - Simple local variables inside functions (unless React hooks)
+ * - Function expressions (handled by extractFunction)
+ * 
+ * @param node - Variable declaration AST node
+ * @param filePath - Source file path
+ * @param content - Full file content
+ * @returns CodeEntity for the variable, or null if should be skipped
+ */
+function extractVariable(
+  node: Parser.SyntaxNode,
+  filePath: string,
+  content: string
+): CodeEntity | null {
+  // Get the declarator (contains name and value)
+  const declarator = node.children.find(
+    (child) => child.type === 'variable_declarator'
+  );
+  if (!declarator) return null;
+
+  // Get variable name
+  const nameNode = declarator.childForFieldName('name');
+  if (!nameNode) return null;
+
+  const name = nameNode.text;
+
+  // Get the value/initializer
+  const valueNode = declarator.childForFieldName('value');
+  
+  // Skip if it's a function/arrow function (handled by extractFunction)
+  if (valueNode) {
+    if (
+      valueNode.type === 'arrow_function' ||
+      valueNode.type === 'function_expression' ||
+      valueNode.type === 'function'
+    ) {
+      return null; // This is a function, not a variable
+    }
+  }
+
+  const valueText = valueNode?.text || '';
+
+  // Check if inside a function
+  let isInsideFunction = false;
+  let parent = node.parent;
+  while (parent) {
+    if (
+      parent.type === 'function_declaration' ||
+      parent.type === 'arrow_function' ||
+      parent.type === 'function_expression' ||
+      parent.type === 'method_definition'
+    ) {
+      isInsideFunction = true;
+      break;
+    }
+    parent = parent.parent;
+  }
+
+  // If inside a function, only extract React hooks and important patterns
+  if (isInsideFunction) {
+    const isReactHook = 
+      valueText.includes('useState(') ||
+      valueText.includes('useRef(') ||
+      valueText.includes('useMemo(') ||
+      valueText.includes('useCallback(') ||
+      valueText.includes('useContext(') ||
+      valueText.includes('useReducer(') ||
+      valueText.includes('useEffect') ||
+      valueText.includes('useLayoutEffect');
+    
+    const isImportantPattern =
+      valueText.includes('createClient(') ||
+      valueText.includes('createContext(') ||
+      valueText.includes('createStore(') ||
+      valueText.includes('express(') ||
+      valueText.includes('Router(');
+
+    // Skip non-important variables inside functions
+    if (!isReactHook && !isImportantPattern) {
+      return null;
+    }
+  }
+
+  // Skip loop variables
+  const parentType = node.parent?.type;
+  if (
+    parentType === 'for_statement' ||
+    parentType === 'for_in_statement' ||
+    parentType === 'for_of_statement'
+  ) {
+    return null;
+  }
+
+  // Get the declaration keyword (const, let, var)
+  const keyword = node.children.find(
+    (child) => child.text === 'const' || child.text === 'let' || child.text === 'var'
+  );
+  const declarationType = keyword?.text || 'const';
+
+  const startLine = node.startPosition.row + 1;
+  const endLine = node.endPosition.row + 1;
+  const code = content.substring(node.startIndex, node.endIndex);
+  const docstring = extractDocstring(node, content);
+
+  // Get type annotation if present
+  const typeNode = declarator.childForFieldName('type');
+  const varType = typeNode ? typeNode.text.replace(/^:\s*/, '') : null;
+
+  // Build signature
+  let signature = `${declarationType} ${name}`;
+  if (varType) {
+    signature += `: ${varType}`;
+  }
+
+  return {
+    id: `${filePath}:${name}:${startLine}`,
+    name,
+    type: 'variable',
+    file: filePath,
+    startLine,
+    endLine,
+    code,
+    signature,
+    docstring,
+    tokens: estimateTokens(code),
+    complexity: 1, // Variables have no control flow
+    calls: [], // Variables don't call functions directly
+    parameters: [],
+    returnType: varType, // Reuse returnType field for variable type
+    properties: valueText ? [valueText.slice(0, 100)] : [], // Store truncated initial value
+  };
+}
+
+// ----------------------------------------------------------------------------
+// SECTION 3.2.11: HELPER FUNCTIONS - DOCSTRINGS
 // ----------------------------------------------------------------------------
 
 /**

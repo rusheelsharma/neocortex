@@ -11,10 +11,17 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+
     "mcp:dev": "cd mcp && pnpm install && pnpm run dev",
     "mcp:build": "cd mcp && pnpm run build",
     "mcp:start": "cd mcp && pnpm run start",
     "test": "echo \"Error: no test specified\" && exit 1"
+
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "server": "tsx src/server.ts",
+    "ui": "vite",
+    "ui:build": "vite build"
+
   },
   "keywords": [
     "slm",
@@ -29,15 +36,32 @@
     "@anthropic-ai/sdk": "^0.71.2",
     "@leanmcp/core": "^0.3.17",
     "commander": "^14.0.2",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^5.2.1",
     "simple-git": "^3.30.0",
     "tree-sitter": "0.21.1",
     "tree-sitter-typescript": "0.23.2"
   },
   "devDependencies": {
+
     "@leanmcp/cli": "^0.4.5",
+
+    "@tailwindcss/postcss": "^4.1.18",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+
     "@types/node": "^25.0.9",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "tailwindcss": "^3.4.19",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
   }
 }
