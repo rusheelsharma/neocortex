@@ -14,10 +14,11 @@ import * as path from 'path';
 /**
  * TEMP_DIR - Directory where repositories are cloned
  * 
- * Using ./temp keeps cloned repos in the project directory.
+ * Uses CACHE_DIR env var if set (Lambda uses /tmp/repos), otherwise ./temp
+ * Lambda only allows writes to /tmp, so CACHE_DIR must point there.
  * This directory should be gitignored.
  */
-const TEMP_DIR = './temp';
+const TEMP_DIR = process.env.CACHE_DIR || './temp';
 
 // ----------------------------------------------------------------------------
 // SECTION 2.2.2: AUTHENTICATION
@@ -65,6 +66,9 @@ export function getAuthToken(optionsToken?: string): string | undefined {
  * const repoPath = await cloneRepository('https://github.com/org/private-repo', 'ghp_xxxx');
  */
 export async function cloneRepository(repoUrl: string, token?: string): Promise<string> {
+  // Log the cache directory being used (helps debug Lambda vs local)
+  console.log(`📂 Using cache directory: ${TEMP_DIR}`);
+  
   // Ensure temp directory exists
   // recursive: true means it won't error if directory exists
   await fs.mkdir(TEMP_DIR, { recursive: true });
