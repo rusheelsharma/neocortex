@@ -256,6 +256,365 @@ app.get('/api/indexed', (req, res) => {
 });
 
 // ============================================================================
+// MCP Server Proxy - Calls deployed MCP server (avoids browser CORS issues)
+// ============================================================================
+
+const MCP_SERVER_URL = 'https://neocortex-mcp.leanmcp.app';
+
+// Helper to call MCP tools (supports SSE responses)
+async function callMCPTool(toolName: string, args: Record<string, any> = {}): Promise<any> {
+  const response = await fetch(`${MCP_SERVER_URL}/mcp`, {
+    method: 'POST',
+    headers: { 
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',  // MCP requires both!
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Date.now(),
+      method: 'tools/call',
+      params: {
+        name: toolName,
+        arguments: args
+      }
+    })
+  });
+
+  const contentType = response.headers.get('content-type') || '';
+  
+  // Handle SSE response
+  if (contentType.includes('text/event-stream')) {
+    const text = await response.text();
+    // Parse SSE format: "data: {...}\n\n"
+    const lines = text.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.result) {
+            return parseToolResult(data.result);
+          }
+          if (data.error) {
+            throw new Error(data.error.message || 'MCP tool call failed');
+          }
+        } catch (e) {
+          // Continue to next line
+        }
+      }
+    }
+    throw new Error('No valid response in SSE stream');
+  }
+
+  // Handle JSON response
+  if (!response.ok) {
+    const text = await response.text();
+    console.error(`[MCP] Error ${response.status}:`, text);
+    throw new Error(`MCP server error: ${response.status}`);
+  }
+
+  const result = await response.json();
+  
+  if (result.error) {
+    throw new Error(result.error.message || 'MCP tool call failed');
+  }
+
+  return parseToolResult(result.result);
+}
+
+// Parse MCP tool result from various formats (handles double-nested JSON)
+function parseToolResult(result: any): any {
+  if (!result) return result;
+  
+  // Preserve isError flag
+  const isError = result.isError;
+  
+  // Recursively extract from { content: [{ type: "text", text: "..." }] } format
+  let current = result;
+  let depth = 0;
+  const maxDepth = 5; // Prevent infinite loops
+  
+  while (depth < maxDepth) {
+    // Check if current has content array with text
+    if (current.content && Array.isArray(current.content)) {
+      const textContent = current.content.find((c: any) => c.type === 'text' && c.text);
+      if (textContent?.text) {
+        try {
+          const parsed = JSON.parse(textContent.text);
+          current = parsed;
+          depth++;
+          continue; // Keep parsing if still nested
+        } catch {
+          break; // Can't parse further
+        }
+      }
+    }
+    break; // No more nesting
+  }
+  
+  // Now current should have the actual data
+  console.log('[MCP] parseToolResult final (depth=' + depth + '):', current);
+  
+  // Preserve isError in result
+  if (isError && typeof current === 'object') {
+    current.isError = true;
+  }
+  
+  return current;
+}
+
+// MCP Health check
+app.get('/api/mcp/health', async (req, res) => {
+  try {
+    const result = await callMCPTool('ping');
+    res.json({ status: 'ok', mcp: result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// MCP Index repo
+app.post('/api/mcp/index', async (req, res) => {
+  try {
+    const { repoUrl, token } = req.body;
+    console.log(`[MCP] Indexing: ${repoUrl}`);
+    
+    const result = await callMCPTool('index_repo', {
+      repo_url: repoUrl,
+      token: token || undefined,
+      extensions: ['.ts', '.tsx', '.js', '.jsx'],
+      exclude_patterns: ['node_modules', 'dist', 'build', '.git']
+    });
+    
+    console.log(`[MCP] Index complete - parsed result:`, result);
+    
+    // Check if MCP returned an error
+    const hasError = result?.isError || result?.status === 'error' || (typeof result?.error === 'string' && result.error.length > 0);
+    if (hasError) {
+      const errorMsg = result?.error || result?.message || result?.hint || 'MCP indexing failed';
+      console.error(`[MCP] Index failed:`, errorMsg);
+      return res.status(500).json({ 
+        error: errorMsg,
+        hint: result?.hint || 'Check if the repository is public and accessible'
+      });
+    }
+    
+    // Extract repo_id from the parsed result
+    const repoId = result?.repo_id || result?.repoId || result?.id;
+    if (!repoId) {
+      console.error(`[MCP] No repo_id in response:`, result);
+      return res.status(500).json({ error: 'MCP server did not return a repo_id' });
+    }
+    
+    // Return the proper response
+    const response = {
+      repo_id: repoId,
+      entities: result?.entities || result?.entity_count || 0,
+      files: result?.files || result?.file_count || 0,
+      message: result?.message || 'Indexed successfully',
+      has_embeddings: result?.has_embeddings || false
+    };
+    
+    console.log(`[MCP] Returning:`, response);
+    res.json(response);
+  } catch (error: any) {
+    console.error('[MCP] Index error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// MCP Search code
+app.post('/api/mcp/search', async (req, res) => {
+  try {
+    const { repoId, query, maxTokens = 2000 } = req.body;
+    console.log(`[MCP] Searching: "${query}" in ${repoId}`);
+    
+    const result = await callMCPTool('search_code', {
+      repo_id: repoId,
+      query,
+      token_budget: maxTokens,
+      expand_deps: true,
+      compress: true
+    });
+    
+    // MCP returns 'snippets', normalize to 'results' for frontend
+    const snippets = result?.snippets || result?.results || [];
+    console.log(`[MCP] Search complete:`, snippets.length, 'results');
+    
+    // Transform snippets to results format
+    const results = snippets.map((s: any) => ({
+      name: s.path?.split('/').pop() || 'unknown',
+      type: 'snippet',
+      file: s.path || '',
+      code: s.code || '',
+      score: s.score || 0.5,
+      startLine: s.startLine,
+      endLine: s.endLine,
+      reason: s.reason
+    }));
+    
+    // Build context from all code snippets
+    const context = snippets.map((s: any) => 
+      `// File: ${s.path} (lines ${s.startLine}-${s.endLine})\n${s.code}`
+    ).join('\n\n');
+    
+    res.json({
+      results,
+      context,
+      tokens: result?.stats?.tokens_used || 0,
+      stats: result?.stats,
+      query_analysis: result?.query_analysis,
+      message: result?.message
+    });
+  } catch (error: any) {
+    console.error('[MCP] Search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// MCP Resolve symbol
+app.post('/api/mcp/resolve', async (req, res) => {
+  try {
+    const { repoId, symbol } = req.body;
+    const result = await callMCPTool('resolve_symbol', {
+      repo_id: repoId,
+      symbol
+    });
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// MCP Get snippet
+app.post('/api/mcp/snippet', async (req, res) => {
+  try {
+    const { repoId, filePath, startLine, endLine, contextLines } = req.body;
+    const result = await callMCPTool('get_snippet', {
+      repo_id: repoId,
+      file_path: filePath,
+      start_line: startLine,
+      end_line: endLine,
+      context_lines: contextLines
+    });
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// Agent Endpoint - LLM formats search results (uses OPENAI_API_KEY from .env)
+// ============================================================================
+
+app.post('/api/agent/ask', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const { repoId, question, maxTokens = 2000 } = req.body;
+    
+    // Check for OpenAI API key
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) {
+      return res.status(500).json({ 
+        error: 'OPENAI_API_KEY not set in .env',
+        hint: 'Add OPENAI_API_KEY=sk-... to your .env file'
+      });
+    }
+    
+    console.log(`[Agent] Question: "${question}"`);
+    
+    // Step 1: Get code snippets from MCP
+    const mcpResult = await callMCPTool('search_code', {
+      repo_id: repoId,
+      query: question,
+      token_budget: maxTokens,
+      expand_deps: true,
+      compress: true
+    });
+    
+    const snippets = mcpResult?.snippets || [];
+    console.log(`[Agent] MCP returned ${snippets.length} snippets`);
+    
+    if (snippets.length === 0) {
+      return res.json({
+        answer: "I couldn't find relevant code for this question.",
+        context: '',
+        queryType: 'agent',
+        confidence: 0.5,
+        tokens: 0,
+        searchTimeMs: Date.now() - startTime,
+        entities: []
+      });
+    }
+    
+    // Build context from snippets
+    const context = snippets.map((s: any) => 
+      `// File: ${s.path} (lines ${s.startLine}-${s.endLine})\n${s.code}`
+    ).join('\n\n');
+    
+    // Step 2: Use LLM to format answer
+    console.log(`[Agent] Calling GPT-4o-mini...`);
+    
+    const llmResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openaiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a code analysis assistant. Given code snippets, explain how they answer the user's question. Be concise (2-3 paragraphs max). Reference specific files and functions.`
+          },
+          {
+            role: 'user',
+            content: `Question: ${question}\n\nCode snippets:\n${context.slice(0, 6000)}`
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0
+      })
+    });
+    
+    if (!llmResponse.ok) {
+      const error = await llmResponse.text();
+      console.error('[Agent] LLM error:', error);
+      throw new Error('LLM call failed');
+    }
+    
+    const llmData = await llmResponse.json();
+    const answer = llmData.choices[0]?.message?.content || 'Failed to generate explanation.';
+    
+    console.log(`[Agent] Complete in ${Date.now() - startTime}ms`);
+    
+    res.json({
+      answer,
+      context,
+      queryType: mcpResult?.query_analysis?.type || 'agent',
+      confidence: mcpResult?.query_analysis?.confidence || 0.9,
+      tokens: mcpResult?.stats?.tokens_used || 0,
+      searchTimeMs: Date.now() - startTime,
+      entities: snippets.map((s: any) => s.path?.split('/').pop() || 'unknown')
+    });
+    
+  } catch (error: any) {
+    console.error('[Agent] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Check if agent is available (has OpenAI key)
+app.get('/api/agent/status', (req, res) => {
+  const hasKey = !!process.env.OPENAI_API_KEY;
+  res.json({ 
+    available: hasKey,
+    model: 'gpt-4o-mini'
+  });
+});
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
