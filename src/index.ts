@@ -23,6 +23,7 @@ import {
   EmbeddingConfig,
 } from './embeddings.js';
 import { selectWithinBudget } from './retrieval/budget.js';
+import { improvedSearch } from './retrieval/search.js';
 
 const program = new Command();
 
@@ -478,29 +479,78 @@ program
       });
       console.log('\n');
 
-      // 6. Semantic search
+      // 6. Raw semantic search (get scores)
       console.log(`🔎 Searching: "${query}"...`);
-      const searchResult = await semanticSearch(query, index.store, graph, {
-        topK,
-        expandDepth: 2,
+      const rawResults = await semanticSearch(query, index.store, graph, {
+        topK: 30,  // Get larger pool for improved search
+        expandDepth: 0,  // Don't expand here, improvedSearch handles it
         model: opts.model as 'openai' | 'voyage-code-2',
       });
 
-      // Collect all relevant entities from search (primary matches + expanded)
-      const searchEntities: CodeEntity[] = [];
-      for (const match of searchResult.matches) {
-        const entity = graph.entities.get(match.entity.entityId);
-        if (entity) searchEntities.push(entity);
+      // Debug: show raw results
+      console.log(`   Raw matches: ${rawResults.matches.length}`);
+      const topScore = rawResults.matches[0]?.score ?? 0;
+      if (rawResults.matches.length > 0) {
+        console.log(`   Top 5 scores:`);
+        rawResults.matches.slice(0, 5).forEach((m, i) => {
+          console.log(`     ${i + 1}. ${m.entity.entityName} - score: ${m.score.toFixed(3)}`);
+        });
       }
-      if (searchResult.expanded) {
-        searchEntities.push(...searchResult.expanded.dependencies);
-        searchEntities.push(...searchResult.expanded.dependents);
+      
+      // If top score is too low, no relevant code exists - return empty
+      // OpenAI embeddings typically have low scores (0.2-0.4 range)
+      if (topScore < 0.30) {
+        console.log(`\n   ⚠️  No relevant code found (top score: ${topScore.toFixed(2)})`);
+        console.log(`   The repository does not appear to contain code related to "${query}"`);
+        console.log(`
+═══════════════════════════════════════════════════════════════
+QUERY: ${query}
+BUDGET: ${maxTokens} tokens
+═══════════════════════════════════════════════════════════════
+
+📊 SEARCH RESULTS
+No relevant code found in this repository.
+
+Try a different query that matches the codebase content.
+═══════════════════════════════════════════════════════════════
+`);
+        console.log('✅ Done!\n');
+        return;
       }
 
-      // 7. Apply budget selection
-      const budgetResult = selectWithinBudget(searchEntities, maxTokens);
+      // Convert to Map<entityId, score> for improvedSearch
+      const semanticScores = new Map<string, number>();
+      for (const match of rawResults.matches) {
+        semanticScores.set(match.entity.entityId, match.score);
+      }
 
-      // 8. Print results
+      // 7. Apply improved search with keyword boosting + graph expansion
+      const improvedResults = improvedSearch(
+        query,
+        entities,
+        graph,
+        semanticScores,
+        {
+          topK: 20,
+          minScore: 0.15,  // Lowered - OpenAI embeddings often have lower similarity scores
+          keywordBoost: 0.2,
+          graphDepth: 1,
+        }
+      );
+
+      // Create matchType map for display
+      const matchTypes = new Map<string, string>();
+      for (const result of improvedResults) {
+        matchTypes.set(result.entity.id, result.matchType);
+      }
+
+      // Get ranked entities for budget selection
+      const rankedEntities = improvedResults.map(r => r.entity);
+
+      // 8. Apply budget selection
+      const budgetResult = selectWithinBudget(rankedEntities, maxTokens);
+
+      // 9. Print results
       console.log(`
 ═══════════════════════════════════════════════════════════════
 QUERY: ${query}
@@ -508,12 +558,13 @@ BUDGET: ${maxTokens} tokens
 ═══════════════════════════════════════════════════════════════
 
 📊 SEARCH RESULTS
-Found ${searchEntities.length} entities, selected ${budgetResult.selected.length} within budget
+Found ${improvedResults.length} entities, selected ${budgetResult.selected.length} within budget
 
 Selected entities:`);
 
       budgetResult.selected.forEach((entity, i) => {
-        console.log(`  ${i + 1}. ${entity.name} (${entity.type}) - ${entity.tokens} tokens - ${entity.file}`);
+        const matchType = matchTypes.get(entity.id) || 'semantic';
+        console.log(`  ${i + 1}. ${entity.name} (${entity.type}) [${matchType}] - ${entity.tokens} tokens - ${entity.file}`);
       });
 
       console.log(`
