@@ -1,0 +1,48 @@
+# Dependencies - will be installed fresh on the server
+node_modules/
+mcp/node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+mcp/dist/
+
+# Temporary files
+temp/
+output/
+*.log
+
+# Development files
+.git/
+.gitignore
+.env
+.env.*
+*.md
+README.md
+ARCHITECTURE.md
+ARCHITECTURE.txt
+
+# IDE and OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+*.test.ts
+**/*.test.ts
+
+# UI files (not needed for MCP server)
+src/ui/
+
+# Config files not needed in Docker
+vite.config.ts
+vite.config 2.ts
+tailwind.config.js
+tailwind.config 2.js
+postcss.config.js
+postcss.config 2.js
+
+# Lock files (pnpm-lock.yaml IS needed, but package-lock is not)
+package-lock.json

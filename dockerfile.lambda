@@ -1,0 +1,59 @@
+# ============================================================================
+# Dockerfile.lambda for Neocortex MCP Server
+# Deploys to LeanMCP platform (AWS Lambda with Lambda Adapter)
+# ============================================================================
+
+FROM public.ecr.aws/docker/library/node:20-bookworm-slim
+
+# Install git (needed for cloning repos) and build tools for native modules (tree-sitter)
+RUN apt-get update && apt-get install -y \
+    git \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Lambda adapter for AWS Lambda compatibility
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
+
+WORKDIR /app
+
+# Install pnpm globally
+RUN npm install -g pnpm
+
+# Copy package files from root
+COPY package.json ./
+COPY pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml ./
+
+# Copy mcp package.json
+COPY mcp/package.json ./mcp/
+
+# Install ALL dependencies (root + workspace packages)
+RUN pnpm install --recursive
+
+# Rebuild native modules for Linux
+RUN pnpm rebuild
+
+WORKDIR /app
+
+# Copy source code - BOTH src/ and mcp/ folders
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY mcp/ ./mcp/
+
+# Lambda adapter configuration
+ENV PORT=3001
+ENV MCP_PORT=3001
+ENV AWS_LWA_PORT=3001
+ENV AWS_LWA_READINESS_CHECK_MIN_UNHEALTHY_STATUS=500
+ENV AWS_LWA_INVOKE_MODE=response_stream
+
+# Cache directory for cloned repos (Lambda only has /tmp writable)
+ENV CACHE_DIR=/tmp/repos
+
+# Change to mcp directory so tsx uses mcp/tsconfig.json (with decorator support)
+WORKDIR /app/mcp
+
+# Use tsx to run TypeScript directly (like dev mode, but reliable)
+CMD ["npx", "tsx", "main.ts"]
