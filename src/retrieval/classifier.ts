@@ -7,7 +7,7 @@
 // TYPES
 // ----------------------------------------------------------------------------
 
-export type QueryType = 'simple' | 'multi-hop' | 'architectural' | 'comparative' | 'debugging' | 'usage';
+export type QueryType = 'simple' | 'multi-hop' | 'architectural' | 'comparative' | 'debugging' | 'usage' | 'line';
 
 export interface QueryAnalysis {
   type: QueryType;
@@ -145,6 +145,22 @@ const PATTERNS = {
     'find',
     'where is',
     'defined',
+  ],
+  
+  line: [
+    'line ',
+    'lines ',
+    'line:',
+    'lines:',
+    'at line',
+    'on line',
+    'show line',
+    'get line',
+    'extract line',
+    'read line',
+    'from line',
+    'line number',
+    'line range',
   ],
 };
 
@@ -304,6 +320,12 @@ function calculateConfidence(
       if (targets.length >= 1) confidence += 0.15;
       if (query.toLowerCase().includes('how')) confidence += 0.05;
       break;
+      
+    case 'line':
+      // High confidence if we have both file path and line number
+      if (/\.(ts|tsx|js|jsx|py|go|rs)/.test(query)) confidence += 0.2;
+      if (/\b\d+\b/.test(query)) confidence += 0.2;
+      break;
   }
   
   return Math.min(Math.max(confidence, 0.1), 1.0); // Clamp to 0.1-1.0
@@ -392,7 +414,29 @@ export function classifyQuery(query: string): QueryAnalysis {
     };
   }
   
-  // 6. DEFAULT: SIMPLE - basic questions
+  // 6. LINE - line extraction queries
+  const lineMatches = findPatternMatches(q, PATTERNS.line);
+  // Also check for line number patterns like "45" or "40-50" or "line 45"
+  const hasLineNumber = /\b\d+(-\d+)?\b/.test(query) || /line\s*\d+/i.test(query);
+  if (lineMatches.length > 0 || hasLineNumber) {
+    // Extract file path if present
+    const fileMatch = query.match(/([a-zA-Z0-9_\-./]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|c|h))/i);
+    const lineMatch = query.match(/\b(\d+)(?:-(\d+))?\b/);
+    
+    return {
+      type: 'line',
+      depth: 0,
+      topK: 1,
+      keywords: lineMatches.length > 0 ? lineMatches : ['line'],
+      targets: fileMatch ? [fileMatch[1]] : targets,
+      confidence: (lineMatches.length > 0 && hasLineNumber) ? 0.95 : 0.75,
+      reason: fileMatch 
+        ? `Line extraction for file "${fileMatch[1]}"${lineMatch ? ` at line ${lineMatch[1]}${lineMatch[2] ? `-${lineMatch[2]}` : ''}` : ''}`
+        : `Line extraction pattern detected`,
+    };
+  }
+  
+  // 7. DEFAULT: SIMPLE - basic questions
   const simpleMatches = findPatternMatches(q, PATTERNS.simple);
   return {
     type: 'simple',
@@ -476,6 +520,17 @@ export function getSearchStrategy(analysis: QueryAnalysis): SearchStrategy {
         ...base,
         minScore: 0.40,
         includeCallees: true,
+      };
+      
+    case 'line':
+      return {
+        ...base,
+        graphDepth: 0,
+        topK: 1,
+        minScore: 0.0, // Not relevant for line extraction
+        keywordBoost: 0.0,
+        includeCallers: false,
+        includeCallees: false,
       };
   }
 }
