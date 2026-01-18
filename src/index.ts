@@ -4,6 +4,7 @@
 // PURPOSE: CLI entry point for Neocortex
 // ============================================================================
 
+import 'dotenv/config';
 import { Command } from 'commander';
 import { cloneRepository, getSourceFiles } from './clone.js';
 import { parseFile } from './parser.js';
@@ -11,6 +12,16 @@ import { generateAllExamples, prepareDataset } from './generator.js';
 import { writeJSONL, writeDatasetSplits, writeStats, formatStats, calculateStats } from './output.js';
 import { CodeEntity, GeneratorConfig, DEFAULT_CONFIG } from './types.js';
 import { buildDependencyGraph, getGraphStats, expandDependencies } from './graph.js';
+import {
+  buildSemanticIndex,
+  semanticSearch,
+  searchByName,
+  formatSearchResults,
+  saveSemanticIndex,
+  getEmbeddingStats,
+  DEFAULT_EMBEDDING_CONFIG,
+  EmbeddingConfig,
+} from './embeddings.js';
 
 const program = new Command();
 
@@ -259,6 +270,150 @@ ${stats.mostDependencies.map(m => `   ${m.name}: ${m.count} calls`).join('\n') |
       }
 
       console.log('✅ Done!\n');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// EMBED COMMAND
+// ============================================================================
+
+program
+  .command('embed')
+  .description('Build semantic embeddings index for a repository')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .option('-o, --output <path>', 'Output path for index', './output/index')
+  .option('--model <model>', 'Embedding model (openai|voyage-code-2)', 'openai')
+  .option('--include-code', 'Include code in embeddings (increases accuracy but uses more tokens)')
+  .action(async (repoUrl: string, opts) => {
+    console.log('\n🧬 Building Semantic Index\n');
+
+    try {
+      // 1. Clone & parse
+      const repoPath = await cloneRepository(repoUrl);
+      const files = await getSourceFiles(
+        repoPath,
+        ['.ts', '.tsx', '.js', '.jsx'],
+        DEFAULT_CONFIG.excludePatterns || []
+      );
+
+      console.log(`📝 Parsing ${files.length} files...`);
+      const entities: CodeEntity[] = [];
+      for (const file of files) {
+        try {
+          entities.push(...await parseFile(file));
+        } catch { /* skip */ }
+      }
+      console.log(`   Found ${entities.length} entities\n`);
+
+      // 2. Build semantic index
+      const config: EmbeddingConfig = {
+        ...DEFAULT_EMBEDDING_CONFIG,
+        model: opts.model as 'openai' | 'voyage-code-2',
+        includeCode: opts.includeCode || false,
+      };
+
+      console.log(`🧬 Generating embeddings with ${config.model}...`);
+      const index = await buildSemanticIndex(entities, config, (stage, cur, total) => {
+        if (stage === 'Generating embeddings') {
+          const pct = Math.round((cur / total) * 100);
+          process.stdout.write(`\r   [${'█'.repeat(Math.floor(pct / 5))}${'░'.repeat(20 - Math.floor(pct / 5))}] ${pct}% (${cur}/${total})`);
+        }
+      });
+      console.log('\n');
+
+      // 3. Save
+      console.log('💾 Saving index...');
+      await saveSemanticIndex(index, opts.output);
+      console.log(`   Saved to ${opts.output}.vectors.json`);
+
+      // 4. Stats
+      const embeddingStats = getEmbeddingStats(index.store);
+      const graphStats = getGraphStats(index.graph);
+
+      console.log(`
+📊 Index Statistics
+═══════════════════════════════
+Entities indexed:  ${embeddingStats.totalVectors}
+Graph edges:       ${graphStats.totalEdges}
+Vector dimension:  ${embeddingStats.avgVectorDimension}
+
+By type:
+${Object.entries(embeddingStats.byType).map(([t, c]) => `   ${t}: ${c}`).join('\n')}
+`);
+      console.log('✅ Done!\n');
+    } catch (err) {
+      console.error('\n❌ Error:', err);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// SEARCH COMMAND
+// ============================================================================
+
+program
+  .command('search')
+  .description('Semantic search across a repository')
+  .argument('<repo-url>', 'GitHub repository URL')
+  .argument('<query>', 'Search query (natural language or function name)')
+  .option('-k, --top-k <n>', 'Number of results', '5')
+  .option('--depth <n>', 'Dependency expansion depth', '2')
+  .option('--by-name', 'Search by exact function name instead of semantic')
+  .option('--code', 'Include code in output')
+  .option('--model <model>', 'Embedding model (openai|voyage-code-2)', 'openai')
+  .action(async (repoUrl: string, query: string, opts) => {
+    console.log('\n🔍 Semantic Search\n');
+
+    try {
+      // 1. Clone & parse
+      const repoPath = await cloneRepository(repoUrl);
+      const files = await getSourceFiles(
+        repoPath,
+        ['.ts', '.tsx', '.js', '.jsx'],
+        DEFAULT_CONFIG.excludePatterns || []
+      );
+
+      console.log(`📝 Parsing ${files.length} files...`);
+      const entities: CodeEntity[] = [];
+      for (const file of files) {
+        try {
+          entities.push(...await parseFile(file));
+        } catch { /* skip */ }
+      }
+      console.log(`   Found ${entities.length} entities\n`);
+
+      // 2. Build index
+      console.log('🧬 Building semantic index...');
+      const config: EmbeddingConfig = {
+        ...DEFAULT_EMBEDDING_CONFIG,
+        model: opts.model as 'openai' | 'voyage-code-2',
+      };
+
+      const index = await buildSemanticIndex(entities, config, (stage, cur, total) => {
+        if (stage === 'Generating embeddings') {
+          const pct = Math.round((cur / total) * 100);
+          process.stdout.write(`\r   [${'█'.repeat(Math.floor(pct / 5))}${'░'.repeat(20 - Math.floor(pct / 5))}] ${pct}%`);
+        }
+      });
+      console.log('\n');
+
+      // 3. Search
+      console.log(`🔎 Searching: "${query}"\n`);
+
+      const result = opts.byName
+        ? searchByName(query, index.store, index.graph, parseInt(opts.depth))
+        : await semanticSearch(query, index.store, index.graph, {
+            topK: parseInt(opts.topK),
+            expandDepth: parseInt(opts.depth),
+            model: opts.model as 'openai' | 'voyage-code-2',
+          });
+
+      // 4. Display
+      console.log(formatSearchResults(result, index.graph, { includeCode: opts.code }));
+      console.log('\n✅ Done!\n');
     } catch (err) {
       console.error('\n❌ Error:', err);
       process.exit(1);
