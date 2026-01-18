@@ -25,7 +25,7 @@ import {
 import { selectWithinBudget } from './retrieval/budget.js';
 import { improvedSearch } from './retrieval/search.js';
 import { compressionPipeline } from './compression/index.js';
-import { extractLinesFromRepo, formatExtractionResult } from './extractor.js';
+import { classifyQuery, getSearchStrategy, formatAnalysis } from './retrieval/classifier.js';
 
 const program = new Command();
 
@@ -449,9 +449,13 @@ program
   .option('-t, --token <token>', 'GitHub personal access token for private repos')
   .action(async (repoUrl: string, query: string, opts) => {
     const maxTokens = parseInt(opts.maxTokens);
-    const topK = parseInt(opts.topK);
 
     console.log('\n🎯 Context Retrieval Pipeline\n');
+
+    // Classify the query to determine search strategy
+    const analysis = classifyQuery(query);
+    const strategy = getSearchStrategy(analysis);
+    console.log(formatAnalysis(analysis));
 
     try {
       // 1. Clone repo
@@ -495,8 +499,9 @@ program
 
       // 6. Raw semantic search (get scores)
       console.log(`🔎 Searching: "${query}"...`);
+      // Use strategy.topK * 1.5 to get a larger candidate pool
       const rawResults = await semanticSearch(query, index.store, graph, {
-        topK: 30,  // Get larger pool for improved search
+        topK: Math.ceil(strategy.topK * 1.5),  // Larger pool for improved search filtering
         expandDepth: 0,  // Don't expand here, improvedSearch handles it
         model: opts.model as 'openai' | 'voyage-code-2',
       });
@@ -538,17 +543,17 @@ Try a different query that matches the codebase content.
         semanticScores.set(match.entity.entityId, match.score);
       }
 
-      // 7. Apply improved search with keyword boosting + graph expansion
+      // 7. Apply improved search with classifier-determined strategy
       const improvedResults = improvedSearch(
         query,
         entities,
         graph,
         semanticScores,
         {
-          topK: 20,
-          minScore: 0.15,  // Lowered - OpenAI embeddings often have lower similarity scores
-          keywordBoost: 0.2,
-          graphDepth: 1,
+          topK: strategy.topK,
+          minScore: strategy.minScore,
+          keywordBoost: strategy.keywordBoost,
+          graphDepth: strategy.graphDepth,
         }
       );
 
@@ -582,7 +587,8 @@ Try a different query that matches the codebase content.
       console.log(`
 ═══════════════════════════════════════════════════════════════
 QUERY: ${query}
-BUDGET: ${maxTokens} tokens
+TYPE:  ${analysis.type.toUpperCase()} (confidence: ${(analysis.confidence * 100).toFixed(0)}%)
+BUDGET: ${maxTokens} tokens | STRATEGY: topK=${strategy.topK}, depth=${strategy.graphDepth}, minScore=${strategy.minScore}
 ═══════════════════════════════════════════════════════════════
 
 📊 SEARCH RESULTS
@@ -606,84 +612,6 @@ ${compressionResult.context}
 
 ═══════════════════════════════════════════════════════════════
 `);
-      console.log('✅ Done!\n');
-    } catch (err) {
-      console.error('\n❌ Error:', err);
-      process.exit(1);
-    }
-  });
-
-// ============================================================================
-// FILES COMMAND
-// ============================================================================
-
-program
-  .command('files')
-  .description('List source files in a repository')
-  .argument('<repo-url>', 'GitHub repository URL')
-  .option('--pattern <glob>', 'File pattern to match', '*.{ts,tsx,js,jsx}')
-  .action(async (repoUrl: string, opts) => {
-    console.log('\n📂 Repository Files\n');
-
-    try {
-      const repoPath = await cloneRepository(repoUrl);
-      const files = await getSourceFiles(
-        repoPath,
-        ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs'],
-        []
-      );
-
-      console.log(`Found ${files.length} source files:\n`);
-      
-      // Group by directory
-      const byDir = new Map<string, string[]>();
-      for (const file of files) {
-        const relative = file.replace(repoPath, '').replace(/\\/g, '/').replace(/^\//, '');
-        const dir = relative.includes('/') ? relative.substring(0, relative.lastIndexOf('/')) : '.';
-        if (!byDir.has(dir)) byDir.set(dir, []);
-        byDir.get(dir)!.push(relative);
-      }
-
-      for (const [dir, dirFiles] of Array.from(byDir.entries()).sort()) {
-        console.log(`📁 ${dir}/`);
-        for (const f of dirFiles.slice(0, 10)) {
-          console.log(`   ${f}`);
-        }
-        if (dirFiles.length > 10) {
-          console.log(`   ... and ${dirFiles.length - 10} more`);
-        }
-      }
-
-      console.log('\n✅ Done!\n');
-    } catch (err) {
-      console.error('\n❌ Error:', err);
-      process.exit(1);
-    }
-  });
-
-// ============================================================================
-// LINE COMMAND
-// ============================================================================
-
-program
-  .command('line')
-  .description('Extract specific lines from a file in a repository')
-  .argument('<repo-url>', 'GitHub repository URL')
-  .argument('<file-path>', 'Path to file in repo (e.g., src/App.tsx)')
-  .argument('<lines>', 'Line number or range (e.g., 45, 40-50, 10:20)')
-  .action(async (repoUrl: string, filePath: string, lines: string) => {
-    console.log('\n📄 Line Extraction\n');
-
-    try {
-      // 1. Clone repo
-      const repoPath = await cloneRepository(repoUrl);
-
-      // 2. Extract lines
-      console.log(`📍 Extracting lines ${lines} from ${filePath}...`);
-      const result = await extractLinesFromRepo(repoPath, filePath, lines);
-
-      // 3. Display result
-      console.log(formatExtractionResult(result));
       console.log('✅ Done!\n');
     } catch (err) {
       console.error('\n❌ Error:', err);
