@@ -146,7 +146,8 @@ export class SearchCodeService {
           {
             topK: Math.max(k * 3, 15), // Get more candidates for filtering
             expandDepth: searchStrategy.graphDepth,
-            model: 'openai'
+            model: 'openai',
+            sessionId: repo.sessionId  // Use session ID from indexing for observability
           }
         );
 

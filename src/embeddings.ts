@@ -223,7 +223,7 @@ export function prepareTextForEmbedding(
  * @param texts - Array of text strings to embed
  * @returns Array of embedding vectors
  */
-async function generateEmbeddingsOpenAI(texts: string[]): Promise<number[][]> {
+async function generateEmbeddingsOpenAI(texts: string[], sessionId?: string): Promise<number[][]> {
   // Determine if we're using LeanMCP AI Gateway or OpenAI directly
   const leanmcpApiKey = process.env.LEANMCP_API_KEY || process.env.AI_GATEWAY_API_KEY;
   const openaiApiKey = process.env.OPENAI_API_KEY;
@@ -255,12 +255,20 @@ async function generateEmbeddingsOpenAI(texts: string[]): Promise<number[][]> {
     throw new Error('LEANMCP_API_KEY or OPENAI_API_KEY environment variable is not set');
   }
 
+  // Build headers - add session tracking for LeanMCP observability
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  };
+  
+  // Add session ID header for LeanMCP observability when using gateway
+  if (isUsingLeanMCP && sessionId) {
+    headers['leanmcp-session-id'] = sessionId;
+  }
+
   const response = await fetch(`${baseUrl}${endpointPath}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       model: 'text-embedding-3-small',
       input: texts,
@@ -325,12 +333,13 @@ async function generateEmbeddingsVoyage(texts: string[]): Promise<number[][]> {
  */
 async function generateEmbeddings(
   texts: string[],
-  model: 'openai' | 'voyage-code-2'
+  model: 'openai' | 'voyage-code-2',
+  sessionId?: string
 ): Promise<number[][]> {
   if (model === 'voyage-code-2') {
     return generateEmbeddingsVoyage(texts);
   }
-  return generateEmbeddingsOpenAI(texts);
+  return generateEmbeddingsOpenAI(texts, sessionId);
 }
 
 /**
@@ -349,7 +358,8 @@ export async function embedEntities(
   entities: CodeEntity[],
   graph: DependencyGraph,
   config: EmbeddingConfig,
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
+  sessionId?: string
 ): Promise<EmbeddingVector[]> {
   const results: EmbeddingVector[] = [];
   const totalBatches = Math.ceil(entities.length / config.batchSize);
@@ -361,8 +371,8 @@ export async function embedEntities(
     // Prepare texts for this batch
     const texts = batch.map(entity => prepareTextForEmbedding(entity, config, graph));
 
-    // Generate embeddings
-    const vectors = await generateEmbeddings(texts, config.model);
+    // Generate embeddings with session ID for observability
+    const vectors = await generateEmbeddings(texts, config.model, sessionId);
 
     // Map back to entities
     for (let j = 0; j < batch.length; j++) {
@@ -569,9 +579,10 @@ export class VectorStore {
  */
 async function embedQuery(
   query: string,
-  model: 'openai' | 'voyage-code-2'
+  model: 'openai' | 'voyage-code-2',
+  sessionId?: string
 ): Promise<number[]> {
-  const vectors = await generateEmbeddings([query], model);
+  const vectors = await generateEmbeddings([query], model, sessionId);
   return vectors[0];
 }
 
@@ -602,14 +613,16 @@ export async function semanticSearch(
     topK?: number;
     expandDepth?: number;
     model?: 'openai' | 'voyage-code-2';
+    sessionId?: string;
   }
 ): Promise<SemanticSearchResult> {
   const topK = options?.topK ?? 5;
   const expandDepth = options?.expandDepth ?? 2;
   const model = options?.model ?? 'openai';
+  const sessionId = options?.sessionId;
 
-  // Step 1: Embed the query
-  const queryVector = await embedQuery(query, model);
+  // Step 1: Embed the query with session ID for observability
+  const queryVector = await embedQuery(query, model, sessionId);
 
   // Step 2: Find similar entities
   const matches = store.findSimilar(queryVector, topK);
