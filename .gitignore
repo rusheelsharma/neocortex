@@ -4,3 +4,8 @@ temp/
 output/
 *.log
 .DS_Store
+
+# Environment variables (contains API keys)
+.env
+.env.local
+.env.*

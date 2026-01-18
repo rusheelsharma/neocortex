@@ -22,7 +22,7 @@
 
 ## Architecture Overview
 
-The tool follows a **pipeline architecture** with 5 distinct stages:
+The tool follows a **pipeline architecture** with 5 distinct stages (plus optional graph building):
 
 ```
 GitHub Repo URL
@@ -33,9 +33,11 @@ GitHub Repo URL
     ↓
 [3. PARSE] → Array of CodeEntity objects
     ↓
-[4. GENERATE] → Array of TrainingExample objects
-    ↓
-[5. WRITE] → JSONL file + stats JSON
+    ├─→ [4. GENERATE] → Array of TrainingExample objects
+    │       ↓
+    │   [5. WRITE] → JSONL file + stats JSON
+    │
+    └─→ [GRAPH BUILD] → DependencyGraph (for analysis & semantic search)
 ```
 
 ### Data Flow
@@ -49,9 +51,8 @@ clone.ts → filePaths (string[])
     ↓
 parser.ts → entities (CodeEntity[])
     ↓
-generator.ts → examples (TrainingExample[])
-    ↓
-output.ts → JSONL file
+    ├─→ generator.ts → examples (TrainingExample[]) → output.ts → JSONL file
+    └─→ graph.ts → DependencyGraph → (for semantic search & analysis)
 ```
 
 ---
@@ -68,6 +69,7 @@ neocortex/
 │   ├── templates.ts      # Question templates
 │   ├── generator.ts      # Example generation
 │   ├── output.ts         # File writing & statistics
+│   ├── graph.ts          # Dependency graph builder & querying
 │   └── extractor.ts      # (Empty file - not currently used)
 ├── output/               # Generated JSONL files (gitignored)
 ├── temp/                 # Cloned repositories (gitignored)
@@ -309,7 +311,173 @@ Each line in JSONL file is a JSON object:
 
 ---
 
-### 7. `src/index.ts` - CLI Entry Point
+### 7. `src/graph.ts` - Dependency Graph Builder
+
+**Purpose**: Builds and queries a dependency graph that tracks relationships between code entities. This enables understanding how functions call each other, finding dependencies, and expanding context for semantic search.
+
+**Key Concept**: The dependency graph is a directed graph where:
+- **Nodes** = Code entities (functions, classes, methods)
+- **Edges** = Function calls (A calls B → edge from A to B)
+
+**Data Structures**:
+
+```typescript
+interface DependencyGraph {
+  entities: Map<string, CodeEntity>;        // ID → entity lookup
+  nameToIds: Map<string, string[]>;        // Name → IDs (handles duplicates)
+  calls: Map<string, Set<string>>;          // Forward edges: entity calls these
+  calledBy: Map<string, Set<string>>;       // Backward edges: called by these
+}
+
+interface ExpandedContext {
+  primary: CodeEntity[];      // Direct matches (seed entities)
+  dependencies: CodeEntity[]; // Functions called by primary
+  dependents: CodeEntity[];   // Functions that call primary
+  types: CodeEntity[];        // Related interfaces/types
+}
+```
+
+**Key Functions**:
+
+#### Graph Building
+
+- **`buildDependencyGraph(entities: CodeEntity[])`**:
+  - **Process**:
+    1. Index all entities by ID and name
+    2. For each entity, look at its `calls` array (extracted by parser)
+    3. Resolve call names to entity IDs using name lookup
+    4. Create forward edges (`calls`) and backward edges (`calledBy`)
+  - **Handles duplicates**: Multiple entities can have the same name (e.g., `Calculator.add` and `Math.add`)
+  - **Name resolution**: Uses `extractBaseName()` to strip class prefixes (`Calculator.add` → `add`)
+  - **Self-references**: Skips self-calls to avoid cycles
+
+#### Graph Querying
+
+- **`getDirectDependencies(graph, entityId)`**:
+  - Returns all entities that this entity calls (outgoing edges)
+  - Example: If `processOrder` calls `validateInput` and `calculateTotal`, returns both
+
+- **`getDirectDependents(graph, entityId)`**:
+  - Returns all entities that call this entity (incoming edges)
+  - Example: If `processOrder` and `processRefund` both call `validateInput`, returns both
+
+- **`expandDependencies(graph, seedIds, maxDepth)`**:
+  - **Core algorithm**: BFS (Breadth-First Search) expansion from seed entities
+  - **Purpose**: Find all related code for semantic search context
+  - **Process**:
+    1. Start with seed entities (primary matches from search)
+    2. BFS traverse to find:
+       - **Dependencies**: What the primary calls (outgoing)
+       - **Dependents**: What calls the primary (incoming, only at depth 0)
+       - **Types**: Related interfaces/types encountered
+    3. Limit by `maxDepth` (default: 2) to prevent explosion
+    4. Categorize results into `ExpandedContext`
+  - **Depth limiting**: Prevents traversing entire codebase
+  - **Dependent limiting**: Only expands dependents at depth 0 (immediate callers) to avoid explosion
+  - **Type detection**: Automatically categorizes interfaces/types separately
+
+#### Utility Functions
+
+- **`findEntitiesByName(graph, name)`**:
+  - Finds all entities matching a name (handles duplicates)
+  - Returns array of `CodeEntity` objects
+
+- **`getGraphStats(graph)`**:
+  - Calculates graph statistics:
+    - Total entities and edges
+    - Average dependencies per entity
+    - Average dependents per entity
+    - Top 5 most called functions
+    - Top 5 functions with most dependencies
+  - Useful for understanding codebase structure
+
+- **`getCallChain(graph, fromId, toId)`**:
+  - Finds shortest path from one entity to another using BFS
+  - Returns array of entity IDs forming the path, or `null` if no path exists
+  - Useful for understanding call chains: "How does A reach B?"
+
+**How It Works**:
+
+1. **Building the Graph**:
+   ```
+   Entities: [processOrder, validateInput, calculateTotal]
+   
+   processOrder.calls = ["validateInput", "calculateTotal"]
+   
+   Graph edges:
+   - processOrder → validateInput
+   - processOrder → calculateTotal
+   - validateInput ← processOrder (backward edge)
+   - calculateTotal ← processOrder (backward edge)
+   ```
+
+2. **Querying**:
+   ```
+   getDirectDependencies(graph, "processOrder")
+   → [validateInput, calculateTotal]
+   
+   getDirectDependents(graph, "validateInput")
+   → [processOrder, processRefund]
+   ```
+
+3. **Expansion** (for semantic search):
+   ```
+   Seed: ["processOrder"]
+   maxDepth: 2
+   
+   Expansion:
+   Depth 0: processOrder (primary)
+   Depth 1: validateInput, calculateTotal (dependencies)
+   Depth 2: parseNumber, formatCurrency (dependencies of dependencies)
+   
+   Result:
+   - primary: [processOrder]
+   - dependencies: [validateInput, calculateTotal, parseNumber, formatCurrency]
+   - dependents: [checkout] (if checkout calls processOrder)
+   ```
+
+**Use Cases**:
+
+1. **Semantic Search Context Expansion**: When searching for "processOrder", include its dependencies and dependents for richer context
+2. **Code Understanding**: Visualize how functions relate to each other
+3. **Impact Analysis**: Find all functions that would be affected by changing a function
+4. **Refactoring**: Identify tightly coupled code that should be refactored together
+
+**Performance Considerations**:
+
+- **Indexing**: O(n) where n = number of entities
+- **Edge building**: O(n × m) where m = average calls per entity
+- **BFS expansion**: O(V + E) where V = vertices, E = edges (limited by maxDepth)
+- **Memory**: Stores all entities and edges in memory (efficient for repos with < 10K entities)
+
+**Integration with CLI**:
+
+The `graph` command in `index.ts` uses this module:
+- Builds graph from parsed entities
+- Displays statistics
+- Optionally expands dependencies for a specific function with `--expand <name>`
+
+**Example Usage**:
+
+```bash
+# Build and display graph statistics
+pnpm dev graph https://github.com/user/repo
+
+# Expand dependencies for a specific function
+pnpm dev graph https://github.com/user/repo --expand processOrder
+```
+
+**Future Enhancements**:
+
+- **Visualization**: Export graph to DOT format for Graphviz
+- **Cyclic detection**: Detect and report circular dependencies
+- **Weighted edges**: Track how often functions call each other
+- **Module boundaries**: Group entities by file/module for better organization
+- **Type dependencies**: Track type usage (not just function calls)
+
+---
+
+### 8. `src/index.ts` - CLI Entry Point
 
 **Purpose**: Command-line interface using Commander.js. Orchestrates the entire pipeline.
 
@@ -340,6 +508,15 @@ Each line in JSONL file is a JSON object:
 3. **`stats <file>`** - Analyze existing JSONL:
    - Reads JSONL file
    - Shows breakdown by question type and difficulty
+
+4. **`graph <repo-url>`** - Build dependency graph:
+   - Clones and parses repository
+   - Builds dependency graph from entities
+   - Displays graph statistics (entities, edges, averages)
+   - Shows most called functions and functions with most dependencies
+   - **Options**:
+     - `--expand <name>`: Expand dependencies for a specific function/class
+       - Shows primary matches, dependencies, dependents, and related types
 
 **Pipeline Execution** (in `generate` command):
 
@@ -512,10 +689,20 @@ All defaults can be overridden via CLI flags (see `index.ts` for options).
 - **Parallel parsing**: Could parse multiple files concurrently
 - **More languages**: Currently only TypeScript/JavaScript - could add Python, Go, etc.
 - **Better docstring extraction**: Could improve JSDoc parsing
-- **Code embeddings**: Could generate embeddings for semantic search
-- **TSX grammar support**: Currently only uses TypeScript grammar - should detect `.tsx` files and use `TypeScript.tsx` grammar for proper JSX parsing
+- **Code embeddings**: Could generate embeddings for semantic search (would integrate with dependency graph for context expansion)
+- **TSX grammar support**: Currently implemented - parser detects `.tsx` files and uses `TypeScript.tsx` grammar
 - **Additional templates**: Could add more templates (e.g., `list_dependencies` for classes to ask "What methods does the class have?")
 - **Variable and enum extraction**: `EntityType` includes `'variable'` and `'enum'` but parser doesn't extract them yet
+
+### Dependency Graph Enhancements
+
+- **Visualization**: Export graph to DOT format for Graphviz visualization
+- **Cyclic detection**: Detect and report circular dependencies
+- **Weighted edges**: Track call frequency (how often functions call each other)
+- **Module boundaries**: Group entities by file/module for better organization
+- **Type dependencies**: Track type usage relationships (not just function calls)
+- **Import/export tracking**: Track module imports to build file-level dependency graph
+- **Graph serialization**: Save/load graphs for faster re-analysis
 
 ---
 
@@ -546,6 +733,7 @@ Neocortex is a **code-to-training-data pipeline** that:
 3. **Parses** code into entities using `parser.ts` (tree-sitter AST)
 4. **Generates** Q&A pairs using `templates.ts` + `generator.ts`
 5. **Writes** JSONL files using `output.ts`
-6. **Orchestrates** everything via `index.ts` (CLI)
+6. **Builds** dependency graphs using `graph.ts` (for analysis & semantic search)
+7. **Orchestrates** everything via `index.ts` (CLI)
 
-The architecture is **modular** - each file has a single responsibility, making it easy to extend or modify individual components.
+The architecture is **modular** - each file has a single responsibility, making it easy to extend or modify individual components. The dependency graph module enables advanced features like semantic search context expansion and code relationship analysis.
