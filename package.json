@@ -15,8 +15,6 @@
     "mcp:dev": "cd mcp && pnpm install && pnpm run dev",
     "mcp:build": "cd mcp && pnpm run build",
     "mcp:start": "cd mcp && pnpm run start",
-    "test": "echo \"Error: no test specified\" && exit 1"
-
     "test": "echo \"Error: no test specified\" && exit 1",
     "server": "tsx src/server.ts",
     "ui": "vite",

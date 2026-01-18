@@ -214,21 +214,48 @@ export function prepareTextForEmbedding(
 // ----------------------------------------------------------------------------
 
 /**
- * generateEmbeddingsOpenAI - Generate embeddings using OpenAI API
+ * generateEmbeddingsOpenAI - Generate embeddings using OpenAI API or AI Gateway
  * 
  * Uses text-embedding-3-small model which provides good quality
  * at lower cost. Returns 1536-dimensional vectors.
+ * Supports routing through AI Gateway if configured.
  * 
  * @param texts - Array of text strings to embed
  * @returns Array of embedding vectors
  */
 async function generateEmbeddingsOpenAI(texts: string[]): Promise<number[][]> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  // Determine if we're using LeanMCP AI Gateway or OpenAI directly
+  const leanmcpApiKey = process.env.LEANMCP_API_KEY || process.env.AI_GATEWAY_API_KEY;
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  
+  // If LeanMCP API key is set, use LeanMCP AI Gateway
+  const isUsingLeanMCP = !!leanmcpApiKey;
+  
+  // Set base URL and endpoint path based on provider
+  // LeanMCP AI Gateway: https://aigateway.leanmcp.com/v1/openai/v1/embeddings
+  // OpenAI Direct: https://api.openai.com/v1/embeddings
+  let baseUrl: string;
+  let endpointPath: string;
+  let apiKey: string;
+  
+  if (isUsingLeanMCP) {
+    // Use LeanMCP AI Gateway with custom URL if provided, otherwise use default
+    const gatewayUrl = process.env.LEANMCP_URL || process.env.AI_GATEWAY_URL || 'https://aigateway.leanmcp.com';
+    baseUrl = gatewayUrl;
+    // LeanMCP gateway uses /v1/openai/v1/embeddings format
+    endpointPath = '/v1/openai/v1/embeddings';
+    apiKey = leanmcpApiKey!;
+  } else {
+    baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com';
+    endpointPath = '/v1/embeddings';
+    apiKey = openaiApiKey!;
+  }
+  
   if (!apiKey) {
-    throw new Error('OPENAI_API_KEY environment variable is not set');
+    throw new Error('LEANMCP_API_KEY or OPENAI_API_KEY environment variable is not set');
   }
 
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
+  const response = await fetch(`${baseUrl}${endpointPath}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -242,7 +269,7 @@ async function generateEmbeddingsOpenAI(texts: string[]): Promise<number[][]> {
 
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(`OpenAI API error: ${response.status} ${response.statusText} - ${error}`);
+    throw new Error(`Embedding API error: ${response.status} ${response.statusText} - ${error}`);
   }
 
   const data = await response.json();

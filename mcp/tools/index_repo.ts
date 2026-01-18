@@ -185,10 +185,16 @@ export class IndexRepoService {
       let vectorStore: VectorStore | null = null;
       let embeddingStats: { generated: number; model: string } | null = null;
 
-      const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+      // Check for LeanMCP or OpenAI API key
+      const leanmcpApiKey = process.env.LEANMCP_API_KEY || process.env.AI_GATEWAY_API_KEY;
+      const openaiApiKey = process.env.OPENAI_API_KEY;
+      const hasApiKey = !!(leanmcpApiKey || openaiApiKey);
       
-      if (!skipEmbeddings && hasOpenAIKey) {
-        console.log(`🧬 Generating semantic embeddings with OpenAI...`);
+      if (!skipEmbeddings && hasApiKey) {
+        // Determine if using LeanMCP based on which API key is set
+        const isUsingLeanMCP = !!leanmcpApiKey;
+        const modelSource = isUsingLeanMCP ? 'LeanMCP' : 'OpenAI';
+        console.log(`🧬 Generating semantic embeddings with ${modelSource}...`);
         try {
           const config: EmbeddingConfig = {
             ...DEFAULT_EMBEDDING_CONFIG,
@@ -211,7 +217,7 @@ export class IndexRepoService {
           
           embeddingStats = {
             generated: embeddings.length,
-            model: 'openai'
+            model: isUsingLeanMCP ? 'leanmcp' : 'openai'
           };
           
           console.log(`✅ Generated ${embeddings.length} embeddings`);
@@ -219,8 +225,8 @@ export class IndexRepoService {
           console.warn(`⚠️  Failed to generate embeddings: ${embeddingError}`);
           console.warn(`   Falling back to keyword-only search`);
         }
-      } else if (!hasOpenAIKey && !skipEmbeddings) {
-        console.log(`⚠️  OPENAI_API_KEY not set - skipping embeddings (keyword search only)`);
+      } else if (!hasApiKey && !skipEmbeddings) {
+        console.log(`⚠️  LEANMCP_API_KEY or OPENAI_API_KEY not set - skipping embeddings (keyword search only)`);
       }
 
       // Step 7: Generate repo ID and store
@@ -270,10 +276,10 @@ export class IndexRepoService {
                 avg_dependencies: graphStats.avgDependencies.toFixed(2),
                 most_called: graphStats.mostCalled.slice(0, 3)
               },
-              embeddings: embeddingStats ?? { generated: 0, model: 'none', reason: hasOpenAIKey ? 'skipped' : 'OPENAI_API_KEY not set' }
+              embeddings: embeddingStats ?? { generated: 0, model: 'none', reason: hasApiKey ? 'skipped' : 'LEANMCP_API_KEY or OPENAI_API_KEY not set' }
             },
             search_mode: vectorStore ? 'semantic' : 'keyword',
-            message: `Successfully indexed ${repoInfo.fullName}. Use repo_id "${repoId}" for search operations. ${vectorStore ? 'Semantic search enabled.' : 'Keyword search only (set OPENAI_API_KEY for semantic search).'}`
+            message: `Successfully indexed ${repoInfo.fullName}. Use repo_id "${repoId}" for search operations. ${vectorStore ? 'Semantic search enabled.' : 'Keyword search only (set LEANMCP_API_KEY or OPENAI_API_KEY for semantic search).'}`
           }, null, 2)
         }]
       };
@@ -295,8 +301,8 @@ export class IndexRepoService {
               ? 'Make sure the repository URL is correct and the repo is public (or provide a token for private repos).'
               : errorMessage.includes('Authentication')
               ? 'Authentication failed. Provide a valid GitHub token for private repositories.'
-              : errorMessage.includes('OPENAI_API_KEY')
-              ? 'Set the OPENAI_API_KEY environment variable for semantic search, or use skip_embeddings: true.'
+              : errorMessage.includes('API_KEY') || errorMessage.includes('OPENAI_API_KEY')
+              ? 'Set the LEANMCP_API_KEY or OPENAI_API_KEY environment variable for semantic search, or use skip_embeddings: true.'
               : 'An unexpected error occurred during indexing.'
           }, null, 2)
         }],

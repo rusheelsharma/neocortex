@@ -232,7 +232,7 @@ export class SearchCodeService {
                   reason: queryAnalysis.reason
                 },
                 message: `No matching code found for "${input.query}".`,
-                suggestion: 'Try broader search terms or check the repository was indexed correctly. Set OPENAI_API_KEY for semantic search.'
+                suggestion: 'Try broader search terms or check the repository was indexed correctly. Set LEANMCP_API_KEY or OPENAI_API_KEY for semantic search.'
               }, null, 2)
             }]
           };
