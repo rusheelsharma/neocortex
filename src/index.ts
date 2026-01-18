@@ -24,6 +24,7 @@ import {
 } from './embeddings.js';
 import { selectWithinBudget } from './retrieval/budget.js';
 import { improvedSearch } from './retrieval/search.js';
+import { compressionPipeline } from './compression/index.js';
 
 const program = new Command();
 
@@ -556,13 +557,27 @@ Try a different query that matches the codebase content.
         matchTypes.set(result.entity.id, result.matchType);
       }
 
-      // Get ranked entities for budget selection
-      const rankedEntities = improvedResults.map(r => r.entity);
+      // 8. Use compression pipeline instead of simple budget selection
+      const compressionResult = await compressionPipeline(
+        improvedResults.map(item => ({
+          id: item.entity.id,
+          name: item.entity.name,
+          file: item.entity.file,
+          code: item.entity.code,
+          tokens: item.entity.tokens,
+          score: item.score
+        })),
+        query,      // The original search query
+        maxTokens   // Token budget
+      );
 
-      // 8. Apply budget selection
-      const budgetResult = selectWithinBudget(rankedEntities, maxTokens);
+      // 9. Log compression stats
+      console.log(`\n📦 COMPRESSION STATS`);
+      console.log(`   Entities: ${improvedResults.length} found → ${compressionResult.stats.entitiesIncluded} selected`);
+      console.log(`   Tokens: ${compressionResult.stats.totalOriginalTokens} → ${compressionResult.stats.afterSlicing} (slicing)`);
+      console.log(`   Reduction: ${compressionResult.stats.slicingReduction}`);
 
-      // 9. Print results
+      // 10. Print results
       console.log(`
 ═══════════════════════════════════════════════════════════════
 QUERY: ${query}
@@ -570,23 +585,23 @@ BUDGET: ${maxTokens} tokens
 ═══════════════════════════════════════════════════════════════
 
 📊 SEARCH RESULTS
-Found ${improvedResults.length} entities, selected ${budgetResult.selected.length} within budget
+Found ${improvedResults.length} entities, selected ${compressionResult.stats.entitiesIncluded} within budget
 
 Selected entities:`);
 
-      budgetResult.selected.forEach((entity, i) => {
+      compressionResult.entities.forEach((entity, i) => {
         const matchType = matchTypes.get(entity.id) || 'semantic';
-        console.log(`  ${i + 1}. ${entity.name} (${entity.type}) [${matchType}] - ${entity.tokens} tokens - ${entity.file}`);
+        console.log(`  ${i + 1}. ${entity.name} [${matchType}] - ${entity.originalTokens} → ${entity.slicedTokens} tokens - ${entity.file}`);
       });
 
       console.log(`
-Total tokens: ${budgetResult.totalTokens}
+Total tokens: ${compressionResult.stats.afterSlicing} (was ${compressionResult.stats.totalOriginalTokens} without compression)
 
 ═══════════════════════════════════════════════════════════════
 CONTEXT (what would be sent to LLM)
 ═══════════════════════════════════════════════════════════════
 
-${budgetResult.context}
+${compressionResult.context}
 
 ═══════════════════════════════════════════════════════════════
 `);
